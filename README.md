@@ -211,7 +211,20 @@ python refresh_token.py
 | `1` | 签到未达成（猫猫失败不在此列） |
 | `2` | 缺少 `WB_ACCESS_TOKEN` |
 
-workflow 中脚本以 `exit 0` 收尾，只对未完成项发 `::warning::`，因此一次运行显示绿色不代表签到一定成功——**以日志、step summary 与飞书卡片为准**。
+脚本自身的退出码只被 workflow **记录**而不直接抛出；是否告警由末尾的「失败时开 Issue」步骤统一判断，因此**运行显示绿色 = 签到确实成功**，不再有"绿色但没签上"的歧义。
+
+## 失败告警（无需第三方服务）
+
+本仓库的 workflow 已内置「失败自动开 Issue」，用 GitHub 自带的通知通道替代飞书：
+
+- **失败时**：自动创建带 `checkin-failure` 标签的 Issue（标题 `⚠️ Buddy 每日签到未成功`），正文含运行链接、退出码、本次结论与常见原因；GitHub 会给仓库 owner 发邮件。
+- **同一故障持续期间**：只维护一个 Issue，后续失败以**评论**追加，不会一天刷三条。
+- **恢复后**：下一次成功运行会评论"已恢复"并**自动关闭**该 Issue。
+- 判定依据是脚本退出码，所以 `WB_ACCESS_TOKEN` 缺失、接口异常、登录态过期都会触发告警。
+
+自检方式：手动触发一次运行时勾选 `simulate_failure`（或命令行 `gh workflow run "Buddy 加油站每日自动化" -f simulate_failure=true`），会强制走失败分支；随后正常触发一次即可看到自动关单。
+
+> 前置条件：仓库设置里 **Issues 必须为开启状态**（fork 默认继承上游设置，可能被关掉）。开启：Settings → Features → 勾选 Issues，或 `gh api -X PATCH repos/OWNER/REPO -F has_issues=true`。
 
 ## 接口
 
