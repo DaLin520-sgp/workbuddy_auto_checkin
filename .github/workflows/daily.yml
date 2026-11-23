@@ -1,4 +1,3 @@
-# activated-by-setup
 name: Buddy 加油站每日自动化
 
 on:
@@ -17,9 +16,16 @@ on:
     - cron: "10 6 * * *"    # 06:10 UTC = 14:10 北京（备份）
     - cron: "10 12 * * *"   # 12:10 UTC = 20:10 北京（备份）
   workflow_dispatch:
+    inputs:
+      simulate_failure:
+        description: "调试用：强制本次运行失败，用于验证「失败自动开 Issue」链路"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
+  # 失败时自动开/关 Issue 需要 issues 写权限
+  issues: write
 
 concurrency:
   group: wb-daily
@@ -53,18 +59,26 @@ jobs:
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
           WB_ENDPOINT: https://copilot.tencent.com
           WB_RESULT_FILE: ${{ runner.temp }}/wb_result.json
+          SIMULATE_FAILURE: ${{ inputs.simulate_failure }}
         run: |
           set -uo pipefail
           PY="${{ steps.py.outputs.python_path }}"
+          # 调试开关：用于验证失败告警链路，平时为 false
+          if [ "${SIMULATE_FAILURE:-false}" = "true" ]; then
+            echo "::warning::已开启 simulate_failure，本次强制失败（仅用于自检）"
+            echo "exit_code=1" >> "$GITHUB_OUTPUT"
+            echo "整体 | 失败（人为模拟）" > "$WB_RESULT_FILE"
+            exit 0
+          fi
           set +e
           "$PY" wb_auto.py
           code=$?
           set -e
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
-          # 签到成功即成功：脚本自身已把猫猫失败与签到结论解耦，
-          # 这里统一以 0 退出，仅用 warning 提示存在未完成项。
+          # 签到成功即成功：脚本自身已把猫猫失败与签到结论解耦。
+          # 退出码在这里只做记录，是否告警交给下一步统一判断。
           if [ "$code" -ne 0 ]; then
-            echo "::warning::本轮存在未完成项，详见上方日志与飞书卡片"
+            echo "::warning::本轮存在未完成项，详见上方日志"
           fi
           exit 0
 
@@ -85,3 +99,87 @@ jobs:
           else
             echo "- 未产出结论文案，请查看上方日志" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      # ---------- 失败告警：开 Issue；恢复后自动关闭 ----------
+      # 设计要点：
+      #   1. 失败才建单，成功时若存在未关闭的告警单则自动关闭 —— 单通道通知，不刷屏
+      #   2. 同一故障持续期间只维护一个 Issue，后续失败以评论追加，不会一天三条
+      #   3. GitHub 会对 Issue 创建/评论发邮件，等于免费拿到了"出问题才响"的提醒
+      - name: 失败时开 Issue（成功则自动关单）
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          EXIT_CODE: ${{ steps.run.outputs.exit_code }}
+          RESULT_FILE: ${{ runner.temp }}/wb_result.json
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -uo pipefail
+          LABEL="checkin-failure"
+          TITLE="⚠️ Buddy 每日签到未成功"
+          # 标签不存在时创建（已存在会报错，忽略即可）
+          gh label create "$LABEL" --color "d93f0b" \
+            --description "签到自动化失败时由工作流自动创建" >/dev/null 2>&1 || true
+
+          open_nums="$(gh issue list --label "$LABEL" --state open --json number \
+            --jq '.[].number' 2>/dev/null || true)"
+          first_open="$(printf '%s\n' "$open_nums" | head -1)"
+
+          if [ "${EXIT_CODE:-unknown}" = "0" ]; then
+            if [ -n "$first_open" ]; then
+              OK_BODY="$(mktemp)"
+              {
+                echo "✅ 已恢复：本次运行签到成功。"
+                echo ""
+                echo "- 运行记录：$RUN_URL"
+                echo "- 时间：$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+                echo ""
+                echo "自动关闭此单。"
+              } > "$OK_BODY"
+              gh issue comment "$first_open" --body-file "$OK_BODY"
+              for n in $open_nums; do
+                gh issue close "$n" --reason completed || true
+              done
+            fi
+            echo "签到成功，无需告警"
+            exit 0
+          fi
+
+          # 失败分支：整理一份不包含任何敏感信息的事故说明
+          BODY="$(mktemp)"
+          {
+            echo "签到自动化本次未成功，请按下面信息检查。"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| 运行记录 | $RUN_URL |"
+            echo "| 退出码 | ${EXIT_CODE:-未知（步骤未执行，可能是环境或检出失败）} |"
+            echo "| 触发方式 | $EVENT_NAME |"
+            echo "| 时间 | $(date -u '+%Y-%m-%d %H:%M:%S UTC') |"
+            echo ""
+            echo "**本次结论**"
+            echo ""
+            if [ -f "$RESULT_FILE" ]; then
+              cat "$RESULT_FILE"
+            else
+              echo "未产出结论文案，请直接查看运行日志。"
+            fi
+            echo ""
+            echo "**常见原因**"
+            echo ""
+            echo "1. **登录态过期**（最常见）—— token 约 28 天过期。在本机运行 \`python refresh_token.py --gh-repo ${GH_REPO}\` 重新注入 Secret 即可。"
+            echo "2. 腾讯接口临时异常 —— 下个时段（每天三次）会自动重试，若自行恢复本单会被自动关闭。"
+            echo "3. 仓库 Actions 被禁用或额度用尽 —— 检查 Actions 页面提示。"
+          } > "$BODY"
+
+          if [ -n "$first_open" ]; then
+            # 已有未关闭的告警单：追加评论而不是重复开单
+            { echo "再次失败（第 N 次运行）：$RUN_URL"; echo ""; cat "$BODY"; } > "${BODY}.c"
+            gh issue comment "$first_open" --body-file "${BODY}.c"
+            echo "已在既有 Issue #$first_open 追加评论"
+          else
+            gh issue create --title "$TITLE" --label "$LABEL" --body-file "$BODY"
+            echo "已创建 Issue"
+          fi
+          exit 1
