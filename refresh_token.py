@@ -315,9 +315,9 @@ def main():
     # 有 gh 且指定了仓库 → 自动写入；否则统一走「指引 + 起止标记 + token」，
     # 保证无论是终端跑 .py 还是双击 exe，输出结构一致、都能照着做
     if gh_repo and shutil.which("gh") is not None:
-        # 明文 token 只作为 stdin 传给 gh，不出现在命令行与进程列表中
-        # gh secret set 不带 --body 时才从 stdin 读取；传 "--body -" 会把
-        # 字面量 "-" 写进 Secret（gh 2.100.0 实测），导致云端 401。
+        # 明文 token 只作为 stdin 传给 gh，不出现在命令行与进程列表中。
+        # 注意：不传 --body 参数时 gh 才会从 stdin 读取；传 "--body -" 会被当作
+        # 字面量 "-"（曾导致 Secret 被写成单个字符，签到全部 401）。
         proc = subprocess.run(
             ["gh", "secret", "set", "WB_ACCESS_TOKEN", "--repo", gh_repo],
             input=token.encode("utf-8"),
