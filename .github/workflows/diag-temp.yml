@@ -1,0 +1,34 @@
+name: diag-temp
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 双域名连通性诊断
+        env:
+          WB_ACCESS_TOKEN: ${{ secrets.WB_ACCESS_TOKEN }}
+        run: |
+          for BASE in "https://copilot.tencent.com" "https://www.workbuddy.cn"; do
+            echo "================ $BASE ================"
+            echo "--- 无 token 的裸请求（看是否 WAF 拦截）---"
+            curl -sS -o /dev/null -w "HTTP %{http_code} | server=%{scheme} redirect=%{redirect_url}\n" \
+              --max-time 20 -X POST "$BASE/v2/billing/meter/checkin-activity-status" \
+              -H "Content-Type: application/json" -d '{}' || true
+            echo "--- 带 token 请求（打印响应头前 20 行 + body 前 400 字节）---"
+            curl -sS -D /tmp/h.txt -o /tmp/b.txt --max-time 20 -X POST \
+              "$BASE/v2/billing/meter/checkin-activity-status" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              -H "User-Agent: WorkBuddy" \
+              -H "Authorization: Bearer $WB_ACCESS_TOKEN" \
+              -d '{}' || true
+            echo "[响应头]"; head -20 /tmp/h.txt
+            echo "[响应体]"; head -c 400 /tmp/b.txt; echo
+            echo
+          done
+           echo "=== runner 出口 IP 归属 ==="
+           curl -sS --max-time 15 https://ipinfo.io/json || true
