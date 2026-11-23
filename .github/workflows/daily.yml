@@ -114,6 +114,7 @@ jobs:
           RESULT_FILE: ${{ runner.temp }}/wb_result.json
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           EVENT_NAME: ${{ github.event_name }}
+          REPO_OWNER: ${{ github.repository_owner }}
         run: |
           set -uo pipefail
           LABEL="checkin-failure"
@@ -179,7 +180,10 @@ jobs:
             gh issue comment "$first_open" --body-file "${BODY}.c"
             echo "已在既有 Issue #$first_open 追加评论"
           else
-            gh issue create --title "$TITLE" --label "$LABEL" --body-file "$BODY"
-            echo "已创建 Issue"
+            # 指派给仓库 owner：GitHub 只在「作者/被指派/@提及/评论」时才发邮件，
+            # 机器人建的单如果不指派，你收不到通知。
+            gh issue create --title "$TITLE" --label "$LABEL" --body-file "$BODY" \
+              --assignee "${REPO_OWNER}"
+            echo "已创建 Issue 并指派给 $REPO_OWNER"
           fi
           exit 1
